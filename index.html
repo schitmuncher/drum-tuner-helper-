@@ -51,6 +51,7 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
+      gap: 10px;
       border-bottom: 1px solid rgba(255, 255, 255, 0.1);
     }
 
@@ -154,6 +155,24 @@
       margin-top: -2px;
     }
 
+    /* Measured pitch shown under each lug */
+    .hz-label {
+      position: absolute;
+      top: 52px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 0.68rem;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.7);
+      white-space: nowrap;
+      pointer-events: none;
+    }
+    .hz-label.good { color: #6ee7b7; }
+    .hz-label.ok   { color: #fcd34d; }
+    .hz-label.off  { color: #fca5a5; }
+
     /* Lug States */
     .lug.active {
       background: var(--amber);
@@ -203,6 +222,13 @@
       width: 100%;
     }
 
+    .tune-group {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      width: 100%;
+    }
+
     button {
       flex: 1;
       padding: 13px 12px;
@@ -213,7 +239,7 @@
       color: #fff;
       background: #27272a;
       cursor: pointer;
-      transition: opacity 0.15s, transform 0.1s;
+      transition: opacity 0.15s, transform 0.1s, background-color 0.15s;
     }
 
     button:active {
@@ -250,6 +276,12 @@
       border: 1px solid rgba(255, 255, 255, 0.12);
     }
 
+    .btn-listen-on {
+      background: var(--green);
+      color: #052e16;
+      border-color: transparent;
+    }
+
     .hidden {
       display: none !important;
     }
@@ -278,6 +310,7 @@
       <button class="btn-preset" onclick="applyPreset(6)">Auto 6-Lug</button>
       <button class="btn-preset" onclick="applyPreset(8)">Auto 8-Lug</button>
       <button class="btn-preset" onclick="applyPreset(10)">Auto 10-Lug</button>
+      <button class="btn-preset hidden" id="restoreBtn" onclick="restoreLayout()">Last layout</button>
     </div>
 
     <!-- Setup Mode Controls -->
@@ -288,9 +321,15 @@
     </div>
 
     <!-- Tuning Mode Controls -->
-    <div class="button-row hidden" id="tuneControls">
-      <button class="btn-danger" onclick="resetToSetup()">Edit Lugs</button>
-      <button class="btn-success" id="tightenBtn" onclick="markTightened()">Tightened ✓ (Next)</button>
+    <div class="tune-group hidden" id="tuneControls">
+      <div class="button-row">
+        <button id="backBtn" onclick="stepBack()">◀ Back</button>
+        <button class="btn-success" id="tightenBtn" onclick="markTightened()" style="flex:2">Tightened ✓ (Next)</button>
+      </div>
+      <div class="button-row">
+        <button class="btn-preset" id="listenBtn" onclick="toggleListen()">🎙 Measure pitch</button>
+        <button class="btn-danger" onclick="resetToSetup()" style="flex:1">Edit Lugs</button>
+      </div>
     </div>
   </div>
 
@@ -308,13 +347,31 @@
     const undoBtn = document.getElementById('undoBtn');
     const startBtn = document.getElementById('startBtn');
     const tightenBtn = document.getElementById('tightenBtn');
+    const restoreBtn = document.getElementById('restoreBtn');
+    const listenBtn = document.getElementById('listenBtn');
 
     // Lug positions are stored relative to the centre of the touch layer and
     // scaled by its smaller dimension, so the layout survives rotation/resizing.
-    let lugs = [];            // { u, v, state }
+    let lugs = [];            // { u, v, state, hz, cents }
     let tuningSequence = [];  // indices into `lugs`, in tightening order
     let currentStep = 0;
     let mode = 'SETUP';       // 'SETUP' | 'TUNING' | 'DONE'
+    let pass = 1;             // full star rounds completed + 1
+
+    // Pitch measuring
+    const HIT_THRESHOLD = 0.06;     // RMS level that counts as a stick hit
+    const HIT_COOLDOWN_MS = 350;    // ignore ring-out right after a hit
+    const SPREAD_GOOD_CENTS = 5;    // evenly tuned
+    const SPREAD_OK_CENTS = 12;     // acceptable
+    const LAYOUT_KEY = 'drumTuner.lastLayout';
+
+    let listening = false;
+    let audioCtx = null;
+    let analyser = null;
+    let micStream = null;
+    let listenRaf = null;
+    let lastHitAt = 0;
+    const timeBuf = new Float32Array(2048);
 
     // Known-good star (cross-tightening) orders for even lug counts, expressed
     // as the order in which opposite-lug pairs are visited. Pair k is lugs
@@ -341,6 +398,21 @@
     function fromScreen(x, y) {
       const { w, h, s } = screenMetrics();
       return { u: (x - w / 2) / s, v: (y - h / 2) / s };
+    }
+
+    function buzz(pattern) {
+      if (navigator.vibrate) {
+        try { navigator.vibrate(pattern); } catch (e) { /* not supported */ }
+      }
+    }
+
+    // Show a temporary message, then restore the normal status line
+    function flash(message) {
+      statusText.textContent = message;
+      setTimeout(() => {
+        if (mode === 'TUNING' || mode === 'DONE') updateTuningStates();
+        else updateSetupUI();
+      }, 2500);
     }
 
     // 1. Initialize Camera
@@ -401,6 +473,30 @@
       render();
     }
 
+    // Saved layouts: the last layout you started tuning with
+    function loadSavedLayout() {
+      try {
+        const arr = JSON.parse(localStorage.getItem(LAYOUT_KEY) || 'null');
+        return Array.isArray(arr) && arr.length >= 4 ? arr : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function saveLayout() {
+      try {
+        localStorage.setItem(LAYOUT_KEY, JSON.stringify(lugs.map(l => ({ u: l.u, v: l.v }))));
+      } catch (e) { /* storage unavailable, skip */ }
+    }
+
+    function restoreLayout() {
+      const arr = loadSavedLayout();
+      if (!arr || mode !== 'SETUP') return;
+      lugs = arr.map(p => ({ u: p.u, v: p.v, state: 'pending' }));
+      updateSetupUI();
+      render();
+    }
+
     function undoLug() {
       if (mode !== 'SETUP') return;
       lugs.pop();
@@ -421,6 +517,7 @@
       clearBtn.disabled = count === 0;
       undoBtn.disabled = count === 0;
       startBtn.disabled = count < 4;
+      restoreBtn.classList.toggle('hidden', count > 0 || !loadSavedLayout());
 
       if (count === 0) {
         statusText.textContent = 'Tap your drum lugs on screen';
@@ -470,21 +567,29 @@
     // 5. Start & Step Through Tuning
     function startTuning() {
       if (lugs.length < 4) return;
+      pass = 1;
+      saveLayout();
+      beginPass();
+    }
+
+    function beginPass() {
       mode = 'TUNING';
       currentStep = 0;
       tuningSequence = buildStarSequence(lugs);
-
-      lugs.forEach(l => l.state = 'pending');
-      updateTuningStates();
+      lugs.forEach(l => { l.state = 'pending'; l.hz = null; l.cents = null; });
 
       presetRow.classList.add('hidden');
       setupControls.classList.add('hidden');
       tuneControls.classList.remove('hidden');
       tightenBtn.textContent = 'Tightened ✓ (Next)';
+      lugCountBadge.textContent = `Pass ${pass}`;
+
+      updateTuningStates();
       render();
     }
 
     function updateTuningStates() {
+      updateReadings();
       lugs.forEach(l => l.state = 'pending');
 
       for (let i = 0; i < tuningSequence.length; i++) {
@@ -499,10 +604,12 @@
       }
 
       if (currentStep < tuningSequence.length) {
+        mode = 'TUNING';
         statusText.textContent = `Tighten Lug #${currentStep + 1} of ${tuningSequence.length}`;
+        tightenBtn.textContent = 'Tightened ✓ (Next)';
       } else {
         mode = 'DONE';
-        statusText.textContent = 'All lugs tightened evenly! 🥁';
+        statusText.textContent = doneStatus();
         tightenBtn.textContent = 'Start Next Pass ↻';
       }
     }
@@ -510,19 +617,37 @@
     function markTightened() {
       if (mode === 'DONE') {
         // Begin another pass around the star
-        startTuning();
+        pass++;
+        beginPass();
         return;
       }
       if (mode !== 'TUNING') return;
 
+      buzz(25);
       currentStep++;
+      updateTuningStates();
+      if (mode === 'DONE') buzz([40, 60, 40]);
+      render();
+    }
+
+    // Go back one lug (or from DONE back to the last lug) to re-tighten it
+    function stepBack() {
+      if (mode === 'TUNING' && currentStep > 0) {
+        currentStep--;
+      } else if (mode === 'DONE') {
+        mode = 'TUNING';
+        currentStep = tuningSequence.length - 1;
+      } else {
+        return;
+      }
       updateTuningStates();
       render();
     }
 
     function resetToSetup() {
+      stopListening();
       mode = 'SETUP';
-      lugs.forEach(l => l.state = 'pending');
+      lugs.forEach(l => { l.state = 'pending'; l.hz = null; l.cents = null; });
       presetRow.classList.remove('hidden');
       setupControls.classList.remove('hidden');
       tuneControls.classList.add('hidden');
@@ -530,7 +655,158 @@
       render();
     }
 
-    // 6. Render AR Markers & SVG Star Lines
+    // 6. Pitch Readings & Evenness
+    function median(values) {
+      const s = values.slice().sort((a, b) => a - b);
+      return s[Math.floor(s.length / 2)];
+    }
+
+    // Convert each measured pitch to cents away from the median of the ring
+    function updateReadings() {
+      const measured = lugs.filter(l => l.hz);
+      if (measured.length < 2) {
+        lugs.forEach(l => { l.cents = null; });
+        return;
+      }
+      const med = median(measured.map(l => l.hz));
+      lugs.forEach(l => { l.cents = l.hz ? 1200 * Math.log2(l.hz / med) : null; });
+    }
+
+    function doneStatus() {
+      const complete = lugs.length > 0 && lugs.every(l => l.hz);
+      if (!complete) return 'All lugs tightened evenly! 🥁';
+
+      const cents = lugs.map(l => l.cents);
+      const spread = Math.max(...cents) - Math.min(...cents);
+      if (spread <= SPREAD_GOOD_CENTS) {
+        return `Evenly tuned ✓ · spread ${spread.toFixed(0)} cents`;
+      }
+      const lowest = lugs.reduce((a, b) => (b.hz < a.hz ? b : a));
+      const stepNumber = tuningSequence.indexOf(lugs.indexOf(lowest)) + 1;
+      return `Spread ${spread.toFixed(0)} cents · tighten lug ${stepNumber} (lowest, ${Math.round(lowest.hz)} Hz)`;
+    }
+
+    // Autocorrelation pitch detector. Returns the fundamental in Hz, or null.
+    function detectPitch(buf, sampleRate) {
+      const MIN_HZ = 60;
+      const MAX_HZ = 400;
+
+      let energy = 0;
+      for (let i = 0; i < buf.length; i++) energy += buf[i] * buf[i];
+      if (Math.sqrt(energy / buf.length) < 0.01) return null;
+
+      const minLag = Math.floor(sampleRate / MAX_HZ);
+      const maxLag = Math.min(Math.ceil(sampleRate / MIN_HZ), buf.length - 2);
+      const lo = Math.max(1, minLag - 1);
+      const hi = Math.min(buf.length - 2, maxLag + 1);
+
+      const corr = new Float32Array(hi + 1);
+      let maxCorr = 0;
+      for (let lag = lo; lag <= hi; lag++) {
+        let c = 0, e1 = 0, e2 = 0;
+        const n = buf.length - lag;
+        for (let i = 0; i < n; i++) {
+          c += buf[i] * buf[i + lag];
+          e1 += buf[i] * buf[i];
+          e2 += buf[i + lag] * buf[i + lag];
+        }
+        corr[lag] = c / Math.sqrt(e1 * e2 + 1e-12);
+        if (lag >= minLag && lag <= maxLag && corr[lag] > maxCorr) maxCorr = corr[lag];
+      }
+
+      // First local peak reaching 90% of the strongest one (avoids octave errors)
+      for (let lag = minLag; lag <= maxLag; lag++) {
+        if (corr[lag] >= 0.9 * maxCorr && corr[lag] > corr[lag - 1] && corr[lag] >= corr[lag + 1]) {
+          const a = corr[lag - 1], b = corr[lag], c = corr[lag + 1];
+          const denom = a - 2 * b + c;
+          const shift = denom === 0 ? 0 : 0.5 * (a - c) / denom; // parabolic refinement
+          const hz = sampleRate / (lag + shift);
+          return hz >= MIN_HZ && hz <= MAX_HZ ? hz : null;
+        }
+      }
+      return null;
+    }
+
+    // 7. Microphone listening: each stick hit is measured for the active lug
+    async function toggleListen() {
+      if (listening) {
+        stopListening();
+        return;
+      }
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !AudioCtx) {
+        flash('Pitch measuring needs a microphone');
+        return;
+      }
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+        });
+      } catch (err) {
+        flash('Microphone blocked, pitch measuring is off');
+        return;
+      }
+
+      audioCtx = new AudioCtx();
+      if (audioCtx.state === 'suspended') await audioCtx.resume();
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 2048;
+      audioCtx.createMediaStreamSource(micStream).connect(analyser);
+
+      listening = true;
+      setListenUI();
+      flash('Listening: tap the head after tightening each lug');
+      pollMic();
+    }
+
+    function stopListening() {
+      listening = false;
+      cancelAnimationFrame(listenRaf);
+      if (micStream) micStream.getTracks().forEach(t => t.stop());
+      if (audioCtx) audioCtx.close();
+      micStream = null;
+      audioCtx = null;
+      analyser = null;
+      setListenUI();
+    }
+
+    function setListenUI() {
+      listenBtn.textContent = listening ? '🎙 Measuring: On' : '🎙 Measure pitch';
+      listenBtn.classList.toggle('btn-listen-on', listening);
+    }
+
+    function pollMic() {
+      if (!listening || !analyser) return;
+      analyser.getFloatTimeDomainData(timeBuf);
+
+      let sum = 0;
+      for (let i = 0; i < timeBuf.length; i++) sum += timeBuf[i] * timeBuf[i];
+      const rms = Math.sqrt(sum / timeBuf.length);
+      const now = performance.now();
+
+      if (rms > HIT_THRESHOLD && now - lastHitAt > HIT_COOLDOWN_MS) {
+        lastHitAt = now;
+        // Wait a moment so the attack has passed and the tone is clean
+        setTimeout(captureHit, 25);
+      }
+      listenRaf = requestAnimationFrame(pollMic);
+    }
+
+    function captureHit() {
+      if (!listening || !analyser || !audioCtx) return;
+      analyser.getFloatTimeDomainData(timeBuf);
+      const hz = detectPitch(timeBuf, audioCtx.sampleRate);
+      if (!hz || mode !== 'TUNING') return;
+
+      const lug = lugs[tuningSequence[currentStep]];
+      if (!lug) return;
+      lug.hz = hz;
+      updateReadings();
+      statusText.textContent = `Lug #${currentStep + 1}: ${Math.round(hz)} Hz`;
+      render();
+    }
+
+    // 8. Render AR Markers & SVG Star Lines
     function render() {
       touchLayer.innerHTML = '';
       svgOverlay.innerHTML = '';
@@ -580,6 +856,13 @@
           } else {
             el.innerHTML = `<span>${stepNumber}</span>`;
           }
+
+          if (lug.hz) {
+            const c = lug.cents;
+            const tone = c == null ? 'ok' : Math.abs(c) <= SPREAD_GOOD_CENTS ? 'good' : Math.abs(c) <= SPREAD_OK_CENTS ? 'ok' : 'off';
+            const offset = c == null ? '' : ` · ${c >= 0 ? '+' : ''}${Math.round(c)}¢`;
+            el.insertAdjacentHTML('beforeend', `<span class="hz-label ${tone}">${Math.round(lug.hz)} Hz${offset}</span>`);
+          }
         }
 
         touchLayer.appendChild(el);
@@ -590,6 +873,12 @@
     window.addEventListener('resize', render);
     window.addEventListener('orientationchange', render);
 
+    // Release the microphone when the app is hidden
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && listening) stopListening();
+    });
+
+    updateSetupUI();
     initCamera();
   </script>
 </body>
