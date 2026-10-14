@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#121214">
+  <title>AR Drum Lug Tuner</title>
+  <style>
+    :root {
+      --bg: #121214;
+      --panel: rgba(24, 24, 28, 0.92);
+      --amber: #f59e0b;
+      --green: #10b981;
+      --blue: #3b82f6;
+      --grey: #52525b;
+      --red: #ef4444;
+      --text: #f4f4f5;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      overflow: hidden;
+      height: 100dvh;
+      width: 100vw;
+      display: flex;
+      flex-direction: column;
+      touch-action: none;
+    }
+
+    /* Top Status Bar */
+    .top-bar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      padding: 14px 16px;
+      background: var(--panel);
+      backdrop-filter: blur(8px);
+      z-index: 20;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .status-text {
+      font-size: 0.95rem;
+      font-weight: 600;
+    }
+
+    .badge {
+      background: #27272a;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      color: #a1a1aa;
+      border: 1px solid rgba(255,255,255,0.08);
+      white-space: nowrap;
+    }
+
+    /* Viewport & Camera */
+    .viewport {
+      position: relative;
+      flex: 1;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: radial-gradient(circle at center, #27272a 0%, #09090b 100%);
+    }
+
+    video {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    /* Fallback drum ring guide */
+    .drum-guide {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 68vmin;
+      height: 68vmin;
+      border: 2px dashed rgba(255, 255, 255, 0.2);
+      border-radius: 50%;
+      pointer-events: none;
+    }
+
+    /* SVG Connector Lines */
+    svg.overlay-svg {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 5;
+    }
+
+    /* Interactive Touch Layer */
+    .touch-layer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 10;
+      touch-action: none;
+    }
+
+    /* Lug Markers */
+    .lug {
+      position: absolute;
+      width: 48px;
+      height: 48px;
+      margin-left: -24px;
+      margin-top: -24px;
+      border-radius: 50%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 1.1rem;
+      color: #fff;
+      background: var(--grey);
+      border: 3px solid rgba(255, 255, 255, 0.85);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
+      transition: transform 0.2s ease, background-color 0.25s ease, border-color 0.25s ease;
+      cursor: pointer;
+    }
+
+    .lug .sub-label {
+      font-size: 0.55rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      opacity: 0.85;
+      margin-top: -2px;
+    }
+
+    /* Lug States */
+    .lug.active {
+      background: var(--amber);
+      border-color: #fff;
+      transform: scale(1.25);
+      z-index: 15;
+      animation: pulse 1.2s infinite;
+    }
+
+    .lug.next {
+      background: var(--blue);
+      border-color: rgba(255, 255, 255, 0.9);
+    }
+
+    .lug.done {
+      background: var(--green);
+      border-color: #a7f3d0;
+      opacity: 0.9;
+    }
+
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7); }
+      70% { box-shadow: 0 0 0 18px rgba(245, 158, 11, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+    }
+
+    /* Bottom Controls */
+    .bottom-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: var(--panel);
+      backdrop-filter: blur(8px);
+      padding: 16px;
+      padding-bottom: calc(16px + env(safe-area-inset-bottom));
+      z-index: 20;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .preset-row, .button-row {
+      display: flex;
+      gap: 8px;
+      width: 100%;
+    }
+
+    button {
+      flex: 1;
+      padding: 13px 12px;
+      border-radius: 10px;
+      border: none;
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #fff;
+      background: #27272a;
+      cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s;
+    }
+
+    button:active {
+      transform: scale(0.97);
+    }
+
+    button:disabled {
+      opacity: 0.35;
+      pointer-events: none;
+    }
+
+    .btn-primary {
+      background: var(--amber);
+      color: #09090b;
+    }
+
+    .btn-success {
+      background: var(--green);
+      color: #052e16;
+      font-size: 1.05rem;
+    }
+
+    .btn-danger {
+      background: rgba(239, 68, 68, 0.2);
+      color: #fca5a5;
+      border: 1px solid rgba(239, 68, 68, 0.4);
+      flex: 0.4;
+    }
+
+    .btn-preset {
+      padding: 8px;
+      font-size: 0.8rem;
+      background: rgba(255, 255, 255, 0.07);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+    }
+
+    .hidden {
+      display: none !important;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Header -->
+  <div class="top-bar">
+    <div class="status-text" id="statusText">Tap your drum lugs on screen</div>
+    <div class="badge" id="lugCountBadge">0 Lugs</div>
+  </div>
+
+  <!-- Camera & AR Canvas -->
+  <div class="viewport">
+    <video id="cameraFeed" autoplay playsinline muted></video>
+    <div class="drum-guide"></div>
+    <svg class="overlay-svg" id="svgOverlay"></svg>
+    <div class="touch-layer" id="touchLayer"></div>
+  </div>
+
+  <!-- Control Panel -->
+  <div class="bottom-bar">
+    <!-- Quick Presets (Visible during setup) -->
+    <div class="preset-row" id="presetRow">
+      <button class="btn-preset" onclick="applyPreset(6)">Auto 6-Lug</button>
+      <button class="btn-preset" onclick="applyPreset(8)">Auto 8-Lug</button>
+      <button class="btn-preset" onclick="applyPreset(10)">Auto 10-Lug</button>
+    </div>
+
+    <!-- Setup Mode Controls -->
+    <div class="button-row" id="setupControls">
+      <button class="btn-danger" id="clearBtn" onclick="clearLugs()" disabled>Clear</button>
+      <button id="undoBtn" onclick="undoLug()" disabled>Undo</button>
+      <button class="btn-primary" id="startBtn" onclick="startTuning()" disabled>Start Tuning</button>
+    </div>
+
+    <!-- Tuning Mode Controls -->
+    <div class="button-row hidden" id="tuneControls">
+      <button class="btn-danger" onclick="resetToSetup()">Edit Lugs</button>
+      <button class="btn-success" id="tightenBtn" onclick="markTightened()">Tightened ✓ (Next)</button>
+    </div>
+  </div>
+
+  <script>
+    const video = document.getElementById('cameraFeed');
+    const touchLayer = document.getElementById('touchLayer');
+    const svgOverlay = document.getElementById('svgOverlay');
+    const statusText = document.getElementById('statusText');
+    const lugCountBadge = document.getElementById('lugCountBadge');
+
+    const presetRow = document.getElementById('presetRow');
+    const setupControls = document.getElementById('setupControls');
+    const tuneControls = document.getElementById('tuneControls');
+    const clearBtn = document.getElementById('clearBtn');
+    const undoBtn = document.getElementById('undoBtn');
+    const startBtn = document.getElementById('startBtn');
+    const tightenBtn = document.getElementById('tightenBtn');
+
+    // Lug positions are stored relative to the centre of the touch layer and
+    // scaled by its smaller dimension, so the layout survives rotation/resizing.
+    let lugs = [];            // { u, v, state }
+    let tuningSequence = [];  // indices into `lugs`, in tightening order
+    let currentStep = 0;
+    let mode = 'SETUP';       // 'SETUP' | 'TUNING' | 'DONE'
+
+    // Known-good star (cross-tightening) orders for even lug counts, expressed
+    // as the order in which opposite-lug pairs are visited. Pair k is lugs
+    // (k, k + n/2) after sorting clockwise.
+    const EVEN_PAIR_ORDER = {
+      4:  [0, 1],
+      6:  [0, 1, 2],
+      8:  [0, 2, 1, 3],
+      10: [0, 2, 4, 1, 3],
+      12: [0, 3, 1, 4, 2, 5]
+    };
+
+    // Coordinate helpers
+    function screenMetrics() {
+      const r = touchLayer.getBoundingClientRect();
+      return { w: r.width, h: r.height, s: Math.min(r.width, r.height) };
+    }
+
+    function toScreen(lug) {
+      const { w, h, s } = screenMetrics();
+      return { x: w / 2 + lug.u * s, y: h / 2 + lug.v * s };
+    }
+
+    function fromScreen(x, y) {
+      const { w, h, s } = screenMetrics();
+      return { u: (x - w / 2) / s, v: (y - h / 2) / s };
+    }
+
+    // 1. Initialize Camera
+    async function initCamera() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        statusText.textContent = 'Virtual Mode: Tap lugs on the ring';
+        return;
+      }
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment' },
+          audio: false
+        });
+        video.srcObject = stream;
+      } catch (err) {
+        console.warn('Camera unavailable or blocked, using virtual drumhead fallback.', err);
+        statusText.textContent = 'Virtual Mode: Tap lugs on the ring';
+      }
+    }
+
+    // 2. Handle Screen Taps to Place Lugs (or to mark the active lug tightened)
+    touchLayer.addEventListener('pointerdown', (e) => {
+      const rect = touchLayer.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+
+      if (mode === 'TUNING') {
+        const activeLug = lugs[tuningSequence[currentStep]];
+        if (activeLug) {
+          const p = toScreen(activeLug);
+          if (Math.hypot(x - p.x, y - p.y) < 38) markTightened();
+        }
+        return;
+      }
+
+      if (mode !== 'SETUP') return;
+
+      lugs.push({ ...fromScreen(x, y), state: 'pending' });
+      updateSetupUI();
+      render();
+    });
+
+    // 3. Auto-Ring Preset Generator
+    function applyPreset(count) {
+      if (mode !== 'SETUP') return;
+      lugs = [];
+      const radius = 0.34; // fraction of the smaller screen dimension
+      for (let i = 0; i < count; i++) {
+        // Start from top (-90 deg)
+        const angle = (i * 2 * Math.PI) / count - Math.PI / 2;
+        lugs.push({
+          u: radius * Math.cos(angle),
+          v: radius * Math.sin(angle),
+          state: 'pending'
+        });
+      }
+      updateSetupUI();
+      render();
+    }
+
+    function undoLug() {
+      if (mode !== 'SETUP') return;
+      lugs.pop();
+      updateSetupUI();
+      render();
+    }
+
+    function clearLugs() {
+      if (mode !== 'SETUP') return;
+      lugs = [];
+      updateSetupUI();
+      render();
+    }
+
+    function updateSetupUI() {
+      const count = lugs.length;
+      lugCountBadge.textContent = `${count} Lug${count === 1 ? '' : 's'}`;
+      clearBtn.disabled = count === 0;
+      undoBtn.disabled = count === 0;
+      startBtn.disabled = count < 4;
+
+      if (count === 0) {
+        statusText.textContent = 'Tap your drum lugs on screen';
+      } else if (count < 4) {
+        statusText.textContent = `Add at least ${4 - count} more lug${4 - count === 1 ? '' : 's'}`;
+      } else {
+        statusText.textContent = 'Ready! Hit Start Tuning';
+      }
+    }
+
+    // 4. Calculate Star Tuning Order
+    function buildStarSequence(lugArray) {
+      const n = lugArray.length;
+      const cu = lugArray.reduce((acc, l) => acc + l.u, 0) / n;
+      const cv = lugArray.reduce((acc, l) => acc + l.v, 0) / n;
+
+      // Sort lugs clockwise on screen, starting from the top (12 o'clock)
+      const indexed = lugArray.map((l, idx) => {
+        let angle = Math.atan2(l.v - cv, l.u - cu) + Math.PI / 2;
+        if (angle < 0) angle += 2 * Math.PI;
+        return { idx, angle };
+      }).sort((a, b) => a.angle - b.angle);
+
+      const orderedIndices = [];
+
+      if (n % 2 === 1) {
+        // Odd lug counts: step by floor(n/2) around the ring
+        const step = Math.floor(n / 2);
+        let curr = 0;
+        for (let i = 0; i < n; i++) {
+          orderedIndices.push(indexed[curr].idx);
+          curr = (curr + step) % n;
+        }
+      } else {
+        // Even lug counts: visit opposite pairs in a star order
+        const half = n / 2;
+        const pairOrder = EVEN_PAIR_ORDER[n] || Array.from({ length: half }, (_, i) => i);
+        for (const p of pairOrder) {
+          orderedIndices.push(indexed[p].idx);
+          orderedIndices.push(indexed[p + half].idx);
+        }
+      }
+
+      return orderedIndices;
+    }
+
+    // 5. Start & Step Through Tuning
+    function startTuning() {
+      if (lugs.length < 4) return;
+      mode = 'TUNING';
+      currentStep = 0;
+      tuningSequence = buildStarSequence(lugs);
+
+      lugs.forEach(l => l.state = 'pending');
+      updateTuningStates();
+
+      presetRow.classList.add('hidden');
+      setupControls.classList.add('hidden');
+      tuneControls.classList.remove('hidden');
+      tightenBtn.textContent = 'Tightened ✓ (Next)';
+      render();
+    }
+
+    function updateTuningStates() {
+      lugs.forEach(l => l.state = 'pending');
+
+      for (let i = 0; i < tuningSequence.length; i++) {
+        const lugIdx = tuningSequence[i];
+        if (i < currentStep) {
+          lugs[lugIdx].state = 'done';
+        } else if (i === currentStep) {
+          lugs[lugIdx].state = 'active';
+        } else if (i === currentStep + 1) {
+          lugs[lugIdx].state = 'next';
+        }
+      }
+
+      if (currentStep < tuningSequence.length) {
+        statusText.textContent = `Tighten Lug #${currentStep + 1} of ${tuningSequence.length}`;
+      } else {
+        mode = 'DONE';
+        statusText.textContent = 'All lugs tightened evenly! 🥁';
+        tightenBtn.textContent = 'Start Next Pass ↻';
+      }
+    }
+
+    function markTightened() {
+      if (mode === 'DONE') {
+        // Begin another pass around the star
+        startTuning();
+        return;
+      }
+      if (mode !== 'TUNING') return;
+
+      currentStep++;
+      updateTuningStates();
+      render();
+    }
+
+    function resetToSetup() {
+      mode = 'SETUP';
+      lugs.forEach(l => l.state = 'pending');
+      presetRow.classList.remove('hidden');
+      setupControls.classList.remove('hidden');
+      tuneControls.classList.add('hidden');
+      updateSetupUI();
+      render();
+    }
+
+    // 6. Render AR Markers & SVG Star Lines
+    function render() {
+      touchLayer.innerHTML = '';
+      svgOverlay.innerHTML = '';
+
+      const points = lugs.map(toScreen);
+
+      // Draw SVG star path in tuning / done mode
+      if (mode === 'TUNING' || mode === 'DONE') {
+        for (let i = 0; i < tuningSequence.length - 1; i++) {
+          const p1 = points[tuningSequence[i]];
+          const p2 = points[tuningSequence[i + 1]];
+          const isCurrentJump = (i === currentStep);
+
+          const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+          line.setAttribute('x1', p1.x);
+          line.setAttribute('y1', p1.y);
+          line.setAttribute('x2', p2.x);
+          line.setAttribute('y2', p2.y);
+          line.setAttribute('stroke', isCurrentJump ? '#f59e0b' : 'rgba(255,255,255,0.18)');
+          line.setAttribute('stroke-width', isCurrentJump ? '4' : '2');
+          if (isCurrentJump) line.setAttribute('stroke-dasharray', '8,6');
+          svgOverlay.appendChild(line);
+        }
+      }
+
+      // Draw lug pins
+      lugs.forEach((lug, idx) => {
+        const p = points[idx];
+        const el = document.createElement('div');
+        el.className = 'lug';
+        el.style.left = `${p.x}px`;
+        el.style.top = `${p.y}px`;
+
+        if (mode === 'SETUP') {
+          el.innerHTML = `<span>${idx + 1}</span>`;
+        } else {
+          const stepNumber = tuningSequence.indexOf(idx) + 1;
+          if (lug.state === 'active') {
+            el.classList.add('active');
+            el.innerHTML = `<span>${stepNumber}</span><span class="sub-label">NOW</span>`;
+          } else if (lug.state === 'next') {
+            el.classList.add('next');
+            el.innerHTML = `<span>${stepNumber}</span><span class="sub-label">NEXT</span>`;
+          } else if (lug.state === 'done') {
+            el.classList.add('done');
+            el.innerHTML = `<span>✓</span><span class="sub-label">#${stepNumber}</span>`;
+          } else {
+            el.innerHTML = `<span>${stepNumber}</span>`;
+          }
+        }
+
+        touchLayer.appendChild(el);
+      });
+    }
+
+    // Keep markers aligned when the phone rotates or the viewport changes size
+    window.addEventListener('resize', render);
+    window.addEventListener('orientationchange', render);
+
+    initCamera();
+  </script>
+</body>
+</html>
