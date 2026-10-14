@@ -276,10 +276,32 @@
       border: 1px solid rgba(255, 255, 255, 0.12);
     }
 
-    .btn-listen-on {
+    .btn-on {
       background: var(--green);
       color: #052e16;
       border-color: transparent;
+    }
+
+    .top-btn {
+      flex: none;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #a1a1aa;
+      background: #27272a;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      white-space: nowrap;
+    }
+
+    .top-btn.btn-on {
+      color: #052e16;
+    }
+
+    .top-right {
+      display: flex;
+      gap: 8px;
+      align-items: center;
     }
 
     .hidden {
@@ -292,12 +314,15 @@
   <!-- Top Header -->
   <div class="top-bar">
     <div class="status-text" id="statusText">Tap your drum lugs on screen</div>
-    <div class="badge" id="lugCountBadge">0 Lugs</div>
+    <div class="top-right">
+      <button class="top-btn" id="cameraBtn" onclick="toggleCamera()">📷 Camera: Off</button>
+      <div class="badge" id="lugCountBadge">0 Lugs</div>
+    </div>
   </div>
 
-  <!-- Camera & AR Canvas -->
+  <!-- Camera & AR Canvas (camera is off by default; the ring is a virtual drumhead) -->
   <div class="viewport">
-    <video id="cameraFeed" autoplay playsinline muted></video>
+    <video id="cameraFeed" class="hidden" autoplay playsinline muted></video>
     <div class="drum-guide"></div>
     <svg class="overlay-svg" id="svgOverlay"></svg>
     <div class="touch-layer" id="touchLayer"></div>
@@ -415,22 +440,45 @@
       }, 2500);
     }
 
-    // 1. Initialize Camera
-    async function initCamera() {
+    // 1. Camera (optional, off by default). Off = virtual drumhead ring.
+    let cameraStream = null;
+    const cameraBtn = document.getElementById('cameraBtn');
+
+    async function toggleCamera() {
+      if (cameraStream) {
+        stopCamera();
+        return;
+      }
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        statusText.textContent = 'Virtual Mode: Tap lugs on the ring';
+        flash('Camera not available on this device');
         return;
       }
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
+        cameraStream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: 'environment' },
           audio: false
         });
-        video.srcObject = stream;
+        video.srcObject = cameraStream;
+        video.classList.remove('hidden');
+        setCameraUI();
       } catch (err) {
-        console.warn('Camera unavailable or blocked, using virtual drumhead fallback.', err);
-        statusText.textContent = 'Virtual Mode: Tap lugs on the ring';
+        console.warn('Camera blocked or unavailable, staying in virtual mode.', err);
+        cameraStream = null;
+        flash('Camera blocked, staying in virtual mode');
       }
+    }
+
+    function stopCamera() {
+      if (cameraStream) cameraStream.getTracks().forEach(t => t.stop());
+      cameraStream = null;
+      video.srcObject = null;
+      video.classList.add('hidden');
+      setCameraUI();
+    }
+
+    function setCameraUI() {
+      cameraBtn.textContent = cameraStream ? '📷 Camera: On' : '📷 Camera: Off';
+      cameraBtn.classList.toggle('btn-on', !!cameraStream);
     }
 
     // 2. Handle Screen Taps to Place Lugs (or to mark the active lug tightened)
@@ -772,7 +820,7 @@
 
     function setListenUI() {
       listenBtn.textContent = listening ? '🎙 Measuring: On' : '🎙 Measure pitch';
-      listenBtn.classList.toggle('btn-listen-on', listening);
+      listenBtn.classList.toggle('btn-on', listening);
     }
 
     function pollMic() {
@@ -873,13 +921,15 @@
     window.addEventListener('resize', render);
     window.addEventListener('orientationchange', render);
 
-    // Release the microphone when the app is hidden
+    // Release the microphone and camera when the app is hidden
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden && listening) stopListening();
+      if (!document.hidden) return;
+      if (listening) stopListening();
+      if (cameraStream) stopCamera();
     });
 
+    setCameraUI();
     updateSetupUI();
-    initCamera();
   </script>
 </body>
 </html>

@@ -4,7 +4,7 @@ A single-file web app that overlays drum lug markers on your camera feed, walks 
 
 ## Usage
 
-1. Open `index.html` in a mobile browser. Camera and microphone access need HTTPS or localhost. If the camera is unavailable, the app falls back to a virtual drumhead.
+1. Open `index.html` in a mobile browser. Camera and microphone access need HTTPS or localhost. The camera is off by default: the app works as a virtual drumhead, and you can turn the camera on with the **📷 Camera** button in the header.
 2. Tap each lug on screen, or use an Auto 6/8/10-lug preset.
 3. Press **Start Tuning**. Follow the numbered sequence, tapping **Tightened ✓** (or the active lug itself) after each lug. **◀ Back** returns to the previous lug.
 4. Optional: press **🎙 Measure pitch**, then tap the head with a stick after tightening each lug. Each reading shows the pitch in Hz and how far it sits from the ring's median in cents.
